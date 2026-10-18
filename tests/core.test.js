@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {compareFacts} from '../shared/facts.js';
+import {TYPES,CHECKLIST,DOCUMENT_RULES} from '../shared/rules.js';
+import {validateInput} from '../server/input.js';
+import {validateFile} from '../src/extraction.js';
+const sample='TO: Maria Santos\nFROM: Ana Reyes\nDATE: October 18, 2026\nSUBJECT: Report submission\nPlease submit Report No. DSWD-2026-014 by October 20, 2026. The approved amount is PHP 25,000.';
+for(const documentType of TYPES)test(`Accept verified ${documentType} and its own guidance`,()=>{assert.equal(validateInput({text:sample,documentType,consent:true,verified:true}).text,sample);assert.ok(DOCUMENT_RULES[documentType].length>=3);});
+test('Consent and extraction verification are enforced server side',()=>{for(const override of [{consent:false},{verified:false},{consent:'true'},{verified:1}])assert.throws(()=>validateInput({text:sample,documentType:'Report',consent:true,verified:true,...override}));});
+test('Invalid document types, empty text and excessive text are rejected',()=>{for(const override of [{documentType:'Other'},{text:' '},{text:'x'.repeat(30001)},{text:12}])assert.throws(()=>validateInput({text:sample,documentType:'Report',consent:true,verified:true,...override}));});
+test('Unchanged facts produce no differences',()=>assert.deepEqual(compareFacts(sample,sample),[]));
+test('Amounts, deadlines, codes and names are flagged',()=>{for(const [from,to] of [['25,000','50,000'],['20, 2026','25, 2026'],['DSWD-2026-014','DSWD-2026-015'],['Maria Santos','Maria Cruz']]){const flags=compareFacts(sample,sample.replace(from,to));assert.ok(flags.some(f=>f.kind==='Missing or changed'),from);assert.ok(flags.some(f=>f.kind==='New or changed'),to);}});
+test('Invented numeric deadlines are flagged',()=>assert.ok(compareFacts(sample,sample+' Submit by November 30, 2026.').some(f=>f.value.includes('30'))));
+test('Removed quotations are flagged',()=>assert.ok(compareFacts('She stated "Approval is pending".','Approval was granted.').some(f=>f.value.includes('Approval is pending'))));
+test('Checklist has exactly fourteen distinct items',()=>{assert.equal(CHECKLIST.length,14);assert.equal(new Set(CHECKLIST).size,14);});
+test('Unsupported files and false file signatures are rejected',async()=>{await assert.rejects(validateFile(new File(['text'],'bad.exe')));await assert.rejects(validateFile(new File(['fake'],'fake.pdf')));await assert.rejects(validateFile(new File(['fake'],'fake.png')));});
+test('File size is enforced before extraction',async()=>{await assert.rejects(validateFile(new File([new Uint8Array(15*1024*1024+1)],'large.pdf')));});
+test('Supported PDF and PNG signatures are accepted',async()=>{assert.equal(await validateFile(new File(['%PDF-1.7'],'document.pdf')),'pdf');assert.equal(await validateFile(new File([new Uint8Array([137,80,78,71,13,10,26,10])],'scan.png')),'png');});
